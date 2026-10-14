@@ -1,0 +1,10 @@
+# 약관 원본 PDF와 가공본은 리포에 넣지 않음 (출처만 README에 적음)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
