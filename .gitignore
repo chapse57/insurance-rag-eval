@@ -8,3 +8,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+
+# 이력서 등 개인 파일 (공개 리포에 올리지 않음)
+private/

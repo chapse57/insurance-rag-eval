@@ -1,5 +1,38 @@
 # 실손보험 약관 RAG — 허술한 첫 버전부터 재고, 고친 기록
 
+## English summary
+
+A RAG system over Korean health-insurance policy documents (indemnity policies, generations 2–4, 583 pages). The goal is not a chatbot that "works", but a record of measuring every stage, finding why it fails, and fixing it — starting from a deliberately plain baseline.
+
+![How it works](docs/pipeline_en.png)
+
+![Results](docs/results_en.png)
+
+![Two real runs](docs/examples_en.png)
+
+**What was measured** — 30 questions written the way customers ask (6 have no answer in the policy)
+
+| Stage | Before | After | What changed |
+|---|---|---|---|
+| Retrieval: correct clause in the top 3 (24 answerable questions) | 41.7% (10/24) | 66.7% (16/24) | re-ranking 20 candidates with bge-reranker-v2-m3; MRR 0.295 → 0.569 |
+| Answers correct, checked by a person | 13/24 | 20/24 | output format forced via tool use: truncated answers 7 → 0, output tokens 20,537 → 6,465 |
+| No-answer questions refused | 6/6 | 5/6 | one answer said "can't confirm" but was submitted as found — logged, not hidden |
+
+**Findings**
+- Chunk size was not the cause. At equal context length (3,000 chars), 200 / 500 / 1,000-char chunks all found 13–14 of 24.
+- All 14 baseline misses were retrieval misses: 0 from text extraction, 0 from chunk boundaries.
+- Asking in policy vocabulary instead of customer words inflates the score (41.7% → 54.2%), so the eval set uses customer wording.
+
+**Limits (kept on purpose)**
+- 6 questions still have no correct chunk in the top 20 — mostly customer words vs. policy words ("money back" vs. "surrender value"). The next fix is retrieval, not the answer step.
+- The quote check stops made-up quotes, but not a real sentence used the wrong way (1 case, q06).
+- Re-ranking takes about 13 s per question on CPU.
+
+Answer run for 30 questions: about $0.011 (Claude Haiku). 29 tests (pytest).
+Stack: Python, PostgreSQL 16 + pgvector, multilingual-e5-small, bge-reranker-v2-m3, Claude API (tool use), pytest, Docker. Run commands: see "실행" below.
+
+---
+
 실손의료보험 약관(2·3·4세대)을 넣고 "내 실손은 몇 세대고, 이 진료는 보장되나"에 답하는 RAG입니다.
 목표는 잘 돌아가는 챗봇이 아니라, **검색이 맞는 조항을 가져왔는지 숫자로 재고, 틀린 이유를 단계별로 나눠 고친 과정**을 남기는 것입니다.
 
