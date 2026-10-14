@@ -17,7 +17,7 @@
 
 ![거절 예시](docs/run_refusal.png)
 
-## 결과 (측정 후 채움)
+## 검색 결과
 
 | 버전 | 자르기 | 재정렬 | Hit Rate@3 | MRR@10 | Hit@3000자 | 비고 |
 |---|---|---|---|---|---|---|
@@ -134,6 +134,12 @@ rag/chunking.py       조각 나누기 (baseline500 = 500자마다 기계적으�
 rag/embed.py          임베딩: intfloat/multilingual-e5-small (무료·로컬, 384차원)
 rag/ingest.py         조각 -> 임베딩 -> Postgres(pgvector) 저장, 넣은 수와 DB 수 대조
 rag/search.py         질문 -> 가장 가까운 조각 k개 (세대 필터 가능)
+rag/rerank.py         재정렬: bge-reranker-v2-m3로 1차 20개를 다시 줄 세움
+rag/generate.py       답변 생성(Claude, 도구 스키마로 형식 강제) + 근거 검사(인용문이 조각에 있는지)
+rag/ask.py            질문 하나에 답: 검색 -> 재정렬 -> 생성 -> 근거 검사
+rag/evaluate.py       검색 채점: Hit@3, MRR@10, Hit@3000자
+rag/evaluate_answers.py  답변 채점: 맞는 답 / 거절 원인 / 가드레일 판정 / 비용
+eval/questions.csv    평가 문제 30개
 db/init.sql           chunks 표. method 컬럼으로 버전별 결과를 한 DB에서 비교
 ```
 
@@ -153,5 +159,8 @@ pip install -r requirements.txt
 python -m rag.extract_check          # 1. 글자가 제대로 뽑히는지 검사
 python -m rag.ingest --method baseline500   # 2. 자르기 -> 임베딩 -> 저장
 python -m rag.search "도수치료는 보장되나요" --gen 4   # 3. 검색
+python -m rag.evaluate --method baseline500 --rerank      # 4. 검색 채점
+python -m rag.ask "3세대 실손 해지하면 돌려받는 돈 있어요?" --gen 3 --rerank   # 5. 답변 (.env에 ANTHROPIC_API_KEY 필요)
+python -m rag.evaluate_answers --rerank                    # 6. 답변 채점
 python -m pytest -q                  # 테스트
 ```
