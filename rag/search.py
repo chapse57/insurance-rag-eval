@@ -26,6 +26,22 @@ def search(question: str, k: int = 3, gen: int | None = None, method: str = "bas
         return conn.execute(SQL, {"q": q, "gen": gen, "k": k, "method": method}).fetchall()
 
 
+NEIGHBOR_SQL = """
+SELECT chunk_no, text FROM chunks
+WHERE method = %(method)s AND gen = %(gen)s AND doc = %(doc)s AND chunk_no = ANY(%(nos)s)
+"""
+
+
+def neighbors(row, method: str = "baseline500") -> tuple[str, str]:
+    """search() 결과 한 줄 -> (바로 앞 조각 글, 바로 뒤 조각 글). 조각은 겹침 없이 이어 잘랐으므로
+    앞 + 이 조각 + 뒤를 붙이면 원문이 그대로 이어진다. 없으면 빈 문자열."""
+    gen, doc, no = row[0], row[1], row[2]
+    with connect() as conn:
+        found = dict(conn.execute(NEIGHBOR_SQL, {"method": method, "gen": gen, "doc": doc,
+                                                 "nos": [no - 1, no + 1]}).fetchall())
+    return found.get(no - 1, ""), found.get(no + 1, "")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("question")

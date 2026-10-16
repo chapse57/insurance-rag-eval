@@ -14,16 +14,17 @@ from functools import lru_cache
 MODEL_NAME = "BAAI/bge-reranker-v2-m3"
 
 
-@lru_cache(maxsize=1)
-def _model():
+@lru_cache(maxsize=2)
+def _model(max_length: int = 512):
+    """max_length: 질문+조각을 몇 토큰까지 읽을지. 짧을수록 빠르지만 조각 뒷부분을 못 읽는다."""
     from sentence_transformers import CrossEncoder
-    return CrossEncoder(MODEL_NAME, max_length=512)
+    return CrossEncoder(MODEL_NAME, max_length=max_length)
 
 
-def rerank(question: str, rows: list) -> list:
+def rerank(question: str, rows: list, max_length: int = 512) -> list:
     """rows: search() 결과. 재정렬 점수가 높은 순서로 다시 정렬해서 돌려준다."""
     if not rows:
         return rows
-    scores = _model().predict([(question, r[6]) for r in rows], batch_size=8, show_progress_bar=False)
+    scores = _model(max_length).predict([(question, r[6]) for r in rows], batch_size=8, show_progress_bar=False)
     order = sorted(range(len(rows)), key=lambda i: -float(scores[i]))
     return [rows[i] for i in order]

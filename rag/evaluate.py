@@ -76,7 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--method", default="baseline500")
     ap.add_argument("--budget", type=int, default=3000, help="Hit@글자예산의 글자 수")
-    ap.add_argument("--rerank", action="store_true", help="1차 검색 20개를 재정렬 모델로 다시 줄 세운 뒤 채점")
+    ap.add_argument("--rerank", action="store_true", help="1차 검색 결과를 재정렬 모델로 다시 줄 세운 뒤 채점")
+    ap.add_argument("--fetch", type=int, default=K_FETCH, help="1차 검색으로 가져올 조각 수 (= 재정렬 후보 수)")
+    ap.add_argument("--max-len", type=int, default=512, help="재정렬 모델이 읽는 최대 토큰 수")
     args = ap.parse_args(argv)
 
     qs = load_questions()
@@ -87,9 +89,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     RESULTS.mkdir(parents=True, exist_ok=True)
-    label = args.method + ("+rerank" if args.rerank else "")
+    label = args.method + (f"+rerank{args.fetch}_len{args.max_len}" if args.rerank else "")
+    rr_times: list[float] = []
     if args.rerank:
         from rag.rerank import rerank
+        rerank("준비", search("준비", k=2, gen=3, method=args.method), max_length=args.max_len)  # 모델 로딩 시간은 빼고 재기
     out = RESULTS / f"{label}_{datetime.now():%m%d_%H%M}.csv"
     ranks_by_type: dict[str, list] = {"answer": [], "hard": []}
     budget_hits = 0
@@ -100,10 +104,12 @@ def main(argv: list[str] | None = None) -> int:
         w.writerow(["id", "gen", "type", "question", "rank", f"hit@{args.budget}자", "top1_page", "top1_text"])
         for q in answerable:
             gen = int(q["gen"])
-            rows = search(q["question"], k=K_FETCH, gen=gen, method=args.method)
+            rows = search(q["question"], k=args.fetch, gen=gen, method=args.method)
             in_fetch += first_hit_rank(rows, gen, q["evidence"]) is not None
             if args.rerank:
-                rows = rerank(q["question"], rows)
+                t_r = time.perf_counter()
+                rows = rerank(q["question"], rows, max_length=args.max_len)
+                rr_times.append(time.perf_counter() - t_r)
             rank = first_hit_rank(rows[:K_MAX], gen, q["evidence"])
             bh = budget_hit(rows, gen, q["evidence"], args.budget)
             budget_hits += bh
@@ -123,7 +129,11 @@ def main(argv: list[str] | None = None) -> int:
         if rs:
             mt = metrics(rs)
             print(f"   {t}: {mt['n']}개 | Hit Rate@3 {mt['hit@3']:.1%} | MRR@10 {mt['mrr@10']:.3f}")
-    print(f"   1차 검색 {K_FETCH}개 안에 정답이 있던 문제: {in_fetch}/{m['n']}"
+    if rr_times:
+        srt = sorted(rr_times)
+        print(f"   재정렬 시간: 질문당 평균 {sum(rr_times) / len(rr_times):.1f}초 · 중앙값 {srt[len(srt) // 2]:.1f}초"
+              f" · 최대 {srt[-1]:.1f}초 (후보 {args.fetch}개, 최대 {args.max_len}토큰)")
+    print(f"   1차 검색 {args.fetch}개 안에 정답이 있던 문제: {in_fetch}/{m['n']}"
           f"{' (재정렬로 올릴 수 있는 최대치)' if args.rerank else ''}")
     skipped = len(qs) - len(answerable)
     if skipped:
