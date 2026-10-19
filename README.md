@@ -197,3 +197,68 @@ python -m rag.ask "3세대 실손 해지하면 돌려받는 돈 있어요?" --ge
 python -m rag.evaluate_answers --rerank                    # 6. 답변 채점
 python -m pytest -q                  # 테스트
 ```
+
+## Agent loop (LangGraph): retry only when the answer can't be verified
+
+![Agent loop](docs/agent_loop_en.png)
+
+The plain pipeline answers once: retrieve → generate → check → done. If the check fails, it refuses.
+The agent loop gives a failed answer **one more chance with a wider search**, and stops there.
+
+- **Retrieve**: pgvector top-20 → reranker → k chunks (k = 3, retry k = 5)
+- **Generate**: Claude returns an answer plus a verbatim quote (tool use)
+- **Verify (plain code, 0 tokens)**
+  1. the quote appears verbatim in the retrieved chunks (existing check)
+  2. **number guard (new)**: every number with a unit in the answer (₩, %, times, days…) appears in the retrieved chunks
+- **Retry on**: `quote_not_found`, `model_refused`, `number_not_found`. Format errors stop immediately.
+
+### Choosing the retry cap by experiment, not by guess
+
+![Retry cap experiment](docs/retry_cap_experiment_en.png)
+
+One run with cap 5; caps 1–4 are computed by truncating the same trajectories.
+
+| Cap | Passed check (/24) | Correct clause retrieved (/24) | Model calls | Input tokens |
+|---|---|---|---|---|
+| 1 (no retry) | 23 | 20 | 30 | 73,377 (1.00×) |
+| **2** | **24** | **21** | **36** | **94,288 (1.28×)** |
+| 3 | 24 | 21 | 41 | 119,244 (1.63×) |
+| 4 | 24 | 21 | 45 | 147,619 (2.01×) |
+| 5 | 24 | 21 | 49 | 192,471 (2.62×) |
+
+**Decision: cap 2.** Going from 1 to 2 recovered one question for +28% input tokens.
+Beyond 2, accuracy did not move while tokens grew to 2.6×, because each retry widens the context.
+
+Example the loop fixed (q24): 1st try with 3 chunks → model refused (correct clause missing) → 2nd try with 5 chunks → correct clause retrieved → passed.
+
+### Checking the checker
+
+![Checking the checker](docs/checking_the_checker_en.png)
+
+- **The number guard blocked 0 answers in the run.** Before trusting that, I tested it directly:
+  on the same retrieved chunks, the real answer (₩30,000 / 30%) passes and an injected fake (₩70,000 / 45%) is blocked.
+  The 0 meant every number in every answer really was in the retrieved text.
+- **Human audit.** Every passed answer whose correct clause was *not* retrieved was read by hand:
+  - q06 — wrong clause: answered "you may get a partial refund"; the policy says no surrender value.
+  - q07 — wrong clause: quoted the general 25% renewal cap instead of the non-covered-care surcharge tiers.
+    The number guard can't catch this: 25% *is* in the policy, just in the wrong rule.
+  - q18 — incomplete: said the rule wasn't in the chunks; it exists in the policy but retrieval missed it.
+- **Label correction (disclosed).** Four evaluation labels (q02, q14, q17, q25) were paraphrases, not verbatim policy text,
+  so the retrieval check marked correct answers as misses. I replaced them with verbatim spans; the original labels are in the git history.
+  This changed the scoring of retrieval, not the model's behavior.
+
+### Limitations
+
+- **One run.** Answers vary between runs: cap-1 passed 22/24 in an earlier run and 23/24 in this one.
+- **"Passed" is not "verified correct" for all 21.** Only the three failures and the four relabeled questions were read by hand.
+- **Widening k can't fix a clause that isn't in the top-20 candidates** (q18). Next: rewrite the question in policy terms before retrying.
+- **The number guard checks the whole retrieved text, not the cited clause** (q07). It stops invented numbers, not misapplied ones.
+
+### Reproduce
+
+```bash
+python -m agent.eval_retry_cap      # 30 questions, cap 5, saves agent/results/eval_v2_raw.json
+python -m agent.rescore             # re-score retrieval against the labels (no model calls)
+python -m agent.inject_test         # number guard fault injection (no model calls)
+python -m agent.check_number_guard  # number extraction unit check
+```

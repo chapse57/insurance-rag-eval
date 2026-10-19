@@ -8,7 +8,7 @@ class _Fake:
 
 
 def test_재정렬은_점수순으로_다시_줄세운다(monkeypatch):
-    monkeypatch.setattr(R, "_model", lambda: _Fake())
+    monkeypatch.setattr(R, "_model", lambda max_length=512: _Fake())
     rows = [(4, "d", 0, 1, 1, 0.9, "엉뚱한 조각"), (4, "d", 1, 2, 2, 0.8, "정답 조각")]
     out = R.rerank("질문", rows)
     assert out[0][6] == "정답 조각" and len(out) == 2
