@@ -28,7 +28,7 @@ A RAG system over Korean health-insurance policy documents (indemnity policies, 
 - The quote check stops made-up quotes, but not a real sentence used the wrong way (1 case, q06).
 - Re-ranking takes about 13 s per question on CPU.
 
-Answer run for 30 questions: about $0.011 (Claude Haiku). 29 tests (pytest).
+Answer run for 30 questions: about $0.011 (Claude Haiku). 55 tests (pytest). Updated documents without stale versions, and permission filtering inside retrieval: see the last section.
 Stack: Python, PostgreSQL 16 + pgvector, multilingual-e5-small, bge-reranker-v2-m3, Claude API (tool use), pytest, Docker. Run commands: see "실행" below.
 
 ---
@@ -261,4 +261,51 @@ python -m agent.eval_retry_cap      # 30 questions, cap 5, saves agent/results/e
 python -m agent.rescore             # re-score retrieval against the labels (no model calls)
 python -m agent.inject_test         # number guard fault injection (no model calls)
 python -m agent.check_number_guard  # number extraction unit check
+```
+
+## Document updates and permissions (retrieval layer)
+
+Two failures that show up in real "chat with your documents" apps, each measured next to the broken versions. Demo data: a short synthetic policy (Korean, one clause per chunk), multilingual-e5-small, one run.
+
+### 1. Updated documents: replace, don't append
+
+Policy v1 has 5 clauses. v2 changes 2 clauses and removes 1 (4 clauses). 3 questions ask about the changed or removed rules.
+
+| Method | Chunks | Chunks with old text | Old answer in top 3 | Old answer ranked #1 |
+|---|---|---|---|---|
+| A. Append (re-upload under a new file name) | 9 | 3 | 3/3 | 2/3 |
+| B. Upsert by chunk number | 5 | 1 | 1/3 | 1/3 |
+| **C. Replace whole document** | **4** | **0** | **0/3** | **0/3** |
+
+- B is the subtle one: it only fails when the new version is shorter, so the removed clause stays searchable.
+- C (`rag/versioning.py`) locks the document, then deletes its chunks, inserts the new ones and checks the count in one transaction. If anything fails it rolls back, so search sees the old version or the new one, never a mix. Tested by injecting a NUL byte (a real PDF-extraction artifact): the insert fails and v1 stays intact.
+- Re-uploading the same content is skipped by a content hash (0 duplicates). A permission-only change updates the groups without re-embedding.
+- The document key must be the app's document ID, not the uploaded file name. Otherwise a renamed re-upload turns into case A.
+
+### 2. Permissions: filter inside the search, not in the prompt
+
+Public policy (6 clauses, group `public`) plus internal underwriting rules (4 clauses, group `underwriting`). 6 questions asked as a customer (`public`), 3 of them aimed at the internal rules, top 3.
+
+| Method | Questions with internal chunks | Internal chunks leaked | Questions with < 3 results |
+|---|---|---|---|
+| 1. No filter (prompt-only "don't reveal") | 5/6 | 7 | 0/6 |
+| 2. Filter after search | 0/6 | 0 | 5/6 |
+| **3. Filter inside search** | **0/6** | **0** | **0/6** |
+
+- With no filter, the internal text is already in the model's input. A prompt rule is the only thing between it and the user.
+- Filtering after top-k stops the leak but leaves 5 of 6 questions with fewer than 3 passages: an authorized answer ranked 4th is simply lost.
+- `rag/acl.py` puts `allowed_groups && user_groups` in the SQL `WHERE`. Underwriters still get the internal rules (3/3). Revoking the group took effect immediately (0/3): 4 rows updated, no re-embedding.
+- Empty groups return nothing (deny by default). Groups must come from the server-side session, never from the request or the question text.
+
+### Limits
+
+- Synthetic 10-clause demo, not the 583-page policies. One run.
+- No vector index yet (exact scan), so a filtered query always returns k rows. With an HNSW index, filtering can return fewer; pgvector 0.8+ iterative index scans are needed.
+
+### Reproduce
+
+```bash
+python -m rag.demo_reindex          # 1. append vs upsert vs replace
+python -m rag.demo_acl              # 2. no filter vs filter after vs filter inside
+python -m pytest -q tests           # 55 tests; DB tests are skipped if Postgres is not running
 ```

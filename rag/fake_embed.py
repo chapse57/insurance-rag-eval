@@ -25,7 +25,7 @@ def _vec(text: str) -> list[float]:
     return [x / n for x in v]
 
 
-def embed_passages(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+def embed_passages(texts: list[str], batch_size: int = 32, show_progress_bar: bool = False) -> list[list[float]]:
     return [_vec(t) for t in texts]
 
 

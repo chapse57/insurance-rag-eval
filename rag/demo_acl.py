@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 
 from rag.acl import post_filter, search_for_user, search_unfiltered
 from rag.db import connect_or_exit
@@ -35,7 +36,7 @@ INTERNAL_DOC = [
     (3, "[내부] 설계사 수수료: 첫해 월 보험료의 300%, 2차년도부터 월 보험료의 5%를 지급합니다."),
     (4, "[내부] 고액 청구(500만원 이상)는 지급 전 현장 조사 대상으로 분류합니다."),
 ]
-USERS = {"고객": ["public"], "심사팀": ["public", "underwriting"]}
+USERS = {"customer": ["public"], "underwriter": ["public", "underwriting"]}
 QUESTIONS = [  # (질문, 내부 기준을 노린 질문인가)
     ("오토바이 배달 일을 하는데 가입할 수 있어요?", True),
     ("입원 이력이 있으면 가입이 거절되나요?", True),
@@ -53,13 +54,14 @@ def is_internal(row) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fake-embed", action="store_true", help="모델 없이 가짜 임베딩 (검색 순위는 참고용)")
-    ap.add_argument("--keep", action="store_true", help="끝나고 demo_acl 행을 지우지 않음")
+    ap.add_argument("--fake-embed", action="store_true", help="no model; hash-based vectors (rankings are only indicative)")
+    ap.add_argument("--keep", action="store_true", help="keep the demo_acl rows in the DB after the run")
     args = ap.parse_args(argv)
     if args.fake_embed:
         from rag.fake_embed import embed_passages, embed_query
     else:
         from rag.embed import embed_passages, embed_query
+    embed_passages = partial(embed_passages, show_progress_bar=False)
 
     with connect_or_exit() as conn:
         ensure_v2_schema(conn)
@@ -69,22 +71,23 @@ def main(argv: list[str] | None = None) -> int:
         replace_document(conn, doc="공개약관", pages=PUBLIC_DOC, groups=["public"], **common)
         replace_document(conn, doc="내부_인수심사기준", pages=INTERNAL_DOC, groups=["underwriting"], **common)
 
-        guest = USERS["고객"]
-        rows_by_mode = {"1. 필터 없음": [], "2. 검색 후 거르기": [], "3. 검색 안에서 거르기": []}
+        customer = USERS["customer"]
+        modes = ("1. No filter", "2. Filter after search", "3. Filter inside search")
+        rows_by_mode = {m: [] for m in modes}
         for q, _ in QUESTIONS:
             raw = search_unfiltered(conn, q, K, method=METHOD, embed_query=embed_query)
-            rows_by_mode["1. 필터 없음"].append(raw)
-            rows_by_mode["2. 검색 후 거르기"].append(post_filter(raw, guest))
-            rows_by_mode["3. 검색 안에서 거르기"].append(
-                search_for_user(conn, q, guest, K, method=METHOD, embed_query=embed_query))
+            rows_by_mode[modes[0]].append(raw)
+            rows_by_mode[modes[1]].append(post_filter(raw, customer))
+            rows_by_mode[modes[2]].append(
+                search_for_user(conn, q, customer, K, method=METHOD, embed_query=embed_query))
 
-        staff = [search_for_user(conn, q, USERS["심사팀"], K, method=METHOD, embed_query=embed_query)
+        staff = [search_for_user(conn, q, USERS["underwriter"], K, method=METHOD, embed_query=embed_query)
                  for q, aimed in QUESTIONS if aimed]
         staff_hits = sum(any(is_internal(r) for r in rows) for rows in staff)
 
         # 권한 회수: 내용은 그대로, 그룹만 underwriting -> underwriting_lead
         rv = replace_document(conn, doc="내부_인수심사기준", pages=INTERNAL_DOC, groups=["underwriting_lead"], **common)
-        after = [search_for_user(conn, q, USERS["심사팀"], K, method=METHOD, embed_query=embed_query)
+        after = [search_for_user(conn, q, USERS["underwriter"], K, method=METHOD, embed_query=embed_query)
                  for q, aimed in QUESTIONS if aimed]
         after_hits = sum(any(is_internal(r) for r in rows) for rows in after)
 
@@ -92,11 +95,12 @@ def main(argv: list[str] | None = None) -> int:
             with conn.transaction():
                 conn.execute("DELETE FROM chunks WHERE method = %s", (METHOD,))
 
-    print(f"공개 약관 조항 {len(PUBLIC_DOC)}개 + 내부 기준 {len(INTERNAL_DOC)}개, 질문 {len(QUESTIONS)}개 (내부 노림 3개), 상위 {K}개."
-          f" 임베딩: {'가짜(fake)' if args.fake_embed else 'multilingual-e5-small'}\n")
-    print("[고객(public) 입장]")
-    print("방법 | 내부 조각이 섞인 질문 | 넘어간 내부 조각 수 | 결과가 3개 미만인 질문")
-    print("(기대값: 3번) | 0/6 | 0 | 0/6")
+    print(f"Public policy: {len(PUBLIC_DOC)} clauses + internal underwriting rules: {len(INTERNAL_DOC)} clauses."
+          f" {len(QUESTIONS)} questions (3 target the internal rules), top {K}."
+          f" Embedding: {'fake (hash)' if args.fake_embed else 'multilingual-e5-small'}\n")
+    print("[Customer: groups = public]")
+    print("Method | Questions with internal chunks | Internal chunks leaked | Questions with < 3 results")
+    print("(expected for 3) | 0/6 | 0 | 0/6")
     leak_total = {}
     for mode, per_q in rows_by_mode.items():
         leaked_q = sum(any(is_internal(r) for r in rows) for rows in per_q)
@@ -105,14 +109,16 @@ def main(argv: list[str] | None = None) -> int:
         leak_total[mode] = (leaked_n, short_q)
         print(f"{mode} | {leaked_q}/6 | {leaked_n} | {short_q}/6")
 
-    print("\n[심사팀(public+underwriting) 입장, 검색 안에서 거르기]")
-    print(f"내부 기준을 노린 질문 3개 중 내부 조각을 받은 질문: {staff_hits}/3  (막지 말아야 할 사람은 안 막는지)")
-    print(f"\n[권한 회수] 내부 기준 그룹 underwriting -> underwriting_lead: {rv.action}"
-          f" (임베딩 다시 안 함, {rv.regrouped}행 변경)")
-    print(f"회수 후 심사팀이 내부 조각을 받은 질문: {after_hits}/3  (기대값 0)")
+    print("\n[Underwriter: groups = public + underwriting, filter inside search]")
+    print(f"Internal-rule questions that got internal chunks: {staff_hits}/3  (authorized users are not blocked)")
+    print(f"\n[Revoke] internal rules: underwriting -> underwriting_lead: {rv.action}"
+          f" (no re-embedding, {rv.regrouped} rows changed)")
+    print(f"After revoke, internal-rule questions where the underwriter got internal chunks: {after_hits}/3"
+          "  (expected 0)")
 
-    ok = leak_total["3. 검색 안에서 거르기"] == (0, 0) and after_hits == 0 and rv.action == "permissions_updated"
-    print("\n결과:", "검색 안에서 거르기: 유출 0, 결과 부족 0, 회수 즉시 적용" if ok else "기대와 다름 -> 확인 필요")
+    ok = leak_total[modes[2]] == (0, 0) and after_hits == 0 and rv.action == "permissions_updated"
+    print("\nResult:", "filter inside search: 0 leaked, 0 short, revoke applied immediately." if ok
+          else "unexpected result -> check.")
     return 0 if ok else 1
 
 

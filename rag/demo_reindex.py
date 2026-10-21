@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 
 from rag.chunking import Chunk
 from rag.db import connect_or_exit
@@ -92,13 +93,14 @@ def cleanup(conn) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fake-embed", action="store_true", help="모델 없이 가짜 임베딩 (검색 순위는 참고용)")
-    ap.add_argument("--keep", action="store_true", help="끝나고 demo_ 행을 지우지 않음 (DB에서 직접 보고 싶을 때)")
+    ap.add_argument("--fake-embed", action="store_true", help="no model; hash-based vectors (rankings are only indicative)")
+    ap.add_argument("--keep", action="store_true", help="keep the demo_ rows in the DB after the run")
     args = ap.parse_args(argv)
     if args.fake_embed:
         from rag.fake_embed import embed_passages, embed_query
     else:
         from rag.embed import embed_passages, embed_query
+    embed_passages = partial(embed_passages, show_progress_bar=False)
 
     with connect_or_exit() as conn:
         ensure_v2_schema(conn)
@@ -111,27 +113,29 @@ def main(argv: list[str] | None = None) -> int:
         upsert_by_chunk_no(conn, METHODS["B"], "약관", V2, embed_passages)
 
         log = []
-        for pages, label in ((V1, "v1"), (V2, "v2"), (V2, "v2 한 번 더")):
+        for pages, label in ((V1, "v1"), (V2, "v2"), (V2, "v2 again")):
             r = replace_document(conn, method=METHODS["C"], gen=GEN, doc="약관", pages=pages,
                                  chunk_fn=by_clause, embed=embed_passages)
-            log.append(f"  {label:<9} -> {r.action:<9} (버전 {r.doc_version}, 지움 {r.deleted}, 넣음 {r.inserted})")
+            log.append(f"  {label:<9} -> {r.action:<9} (version {r.doc_version},"
+                       f" deleted {r.deleted}, inserted {r.inserted})")
 
         res = {k: measure(conn, m, embed_query) for k, m in METHODS.items()}
         if not args.keep:
             cleanup(conn)
 
-    names = {"A": "A. 덧붙이기(새 파일명)", "B": "B. 번호로 덮어쓰기", "C": "C. 통째로 교체"}
-    print(f"v1 조항 {len(V1)}개 -> v2 조항 {len(V2)}개 (제2·4조 변경, 제5조 폐지)."
-          f" 임베딩: {'가짜(fake)' if args.fake_embed else 'multilingual-e5-small'}\n")
-    print("방법 | 조각 수 | 옛 문구 든 조각 | 질문 3개 중 옛 답이 top-3에 | 옛 답이 1등")
-    print(f"(기대값) | {len(V2)} | 0 | 0/3 | 0/3")
+    names = {"A": "A. Append (new file name)", "B": "B. Upsert by chunk number", "C": "C. Replace whole document"}
+    print(f"Policy v1: {len(V1)} clauses -> v2: {len(V2)} clauses (2 changed, 1 removed)."
+          f" Embedding: {'fake (hash)' if args.fake_embed else 'multilingual-e5-small'}\n")
+    print("Method | Chunks | Chunks with old text | Old answer in top 3 | Old answer ranked #1")
+    print(f"(expected) | {len(V2)} | 0 | 0/3 | 0/3")
     for k in "ABC":
         r = res[k]
         print(f"{names[k]} | {r['rows']} | {r['stale_rows']} | {r['q_top3']}/3 | {r['q_top1']}/3")
-    print("\nC. 통째로 교체 기록:")
+    print("\nC. Replace log:")
     print("\n".join(log))
     ok = res["C"] == {"rows": len(V2), "stale_rows": 0, "q_top3": 0, "q_top1": 0}
-    print("\n결과:", "C는 옛 버전 0, 중복 0" if ok else "C에서 옛 버전이나 중복이 남음 -> 확인 필요")
+    print("\nResult:", "C left 0 old chunks and 0 duplicates." if ok
+          else "C still has old or duplicate chunks -> check.")
     return 0 if ok else 1
 
 

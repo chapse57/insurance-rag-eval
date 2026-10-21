@@ -17,9 +17,9 @@ def _model():
     return SentenceTransformer(MODEL_NAME)
 
 
-def embed_passages(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+def embed_passages(texts: list[str], batch_size: int = 32, show_progress_bar: bool = True) -> list[list[float]]:
     vecs = _model().encode([f"passage: {t}" for t in texts], batch_size=batch_size,
-                           normalize_embeddings=True, show_progress_bar=True)
+                           normalize_embeddings=True, show_progress_bar=show_progress_bar)
     return [v.tolist() for v in vecs]
 
 

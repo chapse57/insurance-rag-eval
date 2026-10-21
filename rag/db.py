@@ -18,5 +18,5 @@ def connect_or_exit(autocommit: bool = True):
     try:
         return connect(autocommit=autocommit)
     except psycopg.OperationalError as e:
-        print(f"DB 연결 안 됨: {str(e).splitlines()[0]}\n-> 'docker compose up -d'로 DB를 먼저 띄워 주세요.")
+        print(f"Cannot connect to the database: {str(e).splitlines()[0]}\n-> Start it first: docker compose up -d")
         raise SystemExit(2)
