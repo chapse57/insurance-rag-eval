@@ -18,3 +18,10 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS chunks_method_gen ON chunks (method, gen);
 -- 벡터 색인(HNSW/IVFFlat)은 일부러 아직 안 만든다. 조각이 수천 개 수준이라
 -- 전수 비교로 충분한지 먼저 재고, 그 숫자를 근거로 결정한다.
+
+-- 문서 버전 교체(재색인)와 검색 단계 권한 필터용 열. rag/schema.py의 V2_SQL과 같은 내용
+-- (이미 만들어진 DB는 init.sql이 다시 돌지 않으므로 schema.ensure_v2_schema()가 같은 걸 실행한다).
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS doc_version int NOT NULL DEFAULT 1;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS doc_sha text;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS allowed_groups text[] NOT NULL DEFAULT '{public}';
+CREATE INDEX IF NOT EXISTS chunks_allowed_groups ON chunks USING gin (allowed_groups);
