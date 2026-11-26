@@ -13,6 +13,16 @@ def test_두_순위를_합치면_양쪽에서_모두_높은_조각이_앞에_온
     assert {r[2] for r in H.fuse([a, b])} == {1, 2, 3, 9}     # 한쪽에만 있는 조각도 남는다
 
 
+def test_한쪽_순위의_1등은_다른_쪽에_없어도_맨_앞에_남는다():
+    a = [row(7), row(2), row(3), row(4), row(5), row(6)]       # 7번: 원래 질문에서 1등, 바꿔 쓴 질문에는 없음
+    b = [row(6), row(2), row(3), row(4), row(5)]               # 6번: 바꿔 쓴 질문에서 1등
+    fused = H.fuse([a, b])
+    assert [r[2] for r in fused].index(7) >= 3                 # 합치기만 하면 7번은 상위 3 밖으로 밀린다
+    seated = H.seat_leaders(fused, [a, b])
+    assert {r[2] for r in seated[:2]} == {6, 7}                # 두 순위의 1등이 맨 앞 두 자리
+    assert [r[2] for r in seated[2:]] == [r[2] for r in fused if r[2] not in (6, 7)]   # 나머지 순서는 그대로
+
+
 def test_거의_같은_조각은_하나만_남긴다():
     same = "보험금을 지급하지 않는 사유는 다음과 같습니다. " * 5
     rows = [row(1, same), row(61, same + "끝"), row(2, "전혀 다른 내용의 조각입니다. 해지환급금은 없습니다.")]

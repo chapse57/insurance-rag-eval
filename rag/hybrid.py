@@ -4,12 +4,16 @@
           │               └─ bge-m3  상위 k ─┴─ 합친 후보 -> 재정렬 -> 순위 A
           └─ 바꿔 쓴 질문 ─┬─ e5-small 상위 k ─┐
              (rag.rewrite) └─ bge-m3  상위 k ─┴─ 합친 후보 -> 재정렬 -> 순위 B
-    순위 A + 순위 B (RRF) -> 거의 같은 조각(쌍둥이) 제거 -> 상위 몇 개
+    순위 A + 순위 B (RRF) -> 각 순위의 1등을 맨 앞으로 -> 거의 같은 조각(쌍둥이) 제거 -> 상위 몇 개
 
 왜 이렇게 하나 (60문항 측정, 2026-11-26):
 - 모델 하나의 상위 20개에는 정답이 없는 문항이 있다. 두 모델 후보를 합치면 60문항 전부 후보 안에 정답이 있다.
 - 원래 질문은 요약표 문항에 강하고, 약관 용어로 바꿔 쓴 질문은 조문 본문 문항에 강하다. 한쪽만 쓰면 46/60.
 - 두 순위를 점수가 아니라 순위로 합친다. 재정렬 점수는 질문이 다르면 크기가 달라서 그대로 비교할 수 없다.
+- 한쪽 순위의 1등은 다른 쪽 순위에 아예 없어도 상위에 남긴다 (seat_leaders). 바꿔 쓴 질문이 뜻을 틀리게 옮기면
+  원래 질문의 1등이 합친 순위에서 4~5등으로 밀린다 (q03, n34). 1등 + 없음 = 1/6 + 1/104 = 0.176 인데
+  6등 + 1등 = 1/11 + 1/6 = 0.258 이라서다. 이 규칙으로 52 -> 54/60, 새로 틀린 문항 0.
+  주의: 틀린 문항을 들여다본 뒤에 정한 규칙이다. 이 60문항 점수는 낙관적이므로 새 문항으로 다시 확인해야 한다.
 - 약관이 한 파일에 두 벌 실린 구간이 있어서 같은 내용이 상위 칸을 두 개 차지한다 -> 거의 같은 조각은 하나만 남긴다.
 
 조각 한 줄의 모양은 rag.search.search()와 같다: (gen, doc, chunk_no, page_start, page_end, score, text)
@@ -56,6 +60,12 @@ def fuse(ranked_lists: list[list]) -> list:
     return sorted(rows.values(), key=lambda r: -score(r[2]))
 
 
+def seat_leaders(fused: list, ranked_lists: list[list]) -> list:
+    """각 순위 목록의 1등을 합친 순위의 맨 앞으로 옮긴다. 1등끼리의 순서와 나머지 순서는 합친 순위 그대로."""
+    leaders = {lst[0][2] for lst in ranked_lists if lst}
+    return [r for r in fused if r[2] in leaders] + [r for r in fused if r[2] not in leaders]
+
+
 def _grams(text: str, n: int = 6) -> set[str]:
     return {text[i:i + n] for i in range(0, max(1, len(text) - n + 1), 3)}
 
@@ -97,7 +107,7 @@ def retrieve(question: str, gen: int | None = None, top: int = 3, base: str = "b
                 seen.add(rewritten)
                 lists.append(ranked_for_query(rewritten, gen, base, k, max_length))
     fused = fuse(lists) if len(lists) > 1 else lists[0]
-    best = drop_twins(fused, limit=max(top, 10))
+    best = drop_twins(seat_leaders(fused, lists), limit=max(top, 10))
     if llm_pick:                      # 상위 10개 중 답이 든 조각을 Claude가 골라 앞에 놓는다 (rag/llm_pick.py)
         from rag.llm_pick import pick
         best = pick(question, best)
