@@ -14,6 +14,8 @@
               Hit@3으로 비교하면 큰 조각이 글자를 더 많이 보여주는 만큼 유리해서 공정하지 않다.
 
 실행:  python -m rag.evaluate --method baseline500
+       python -m rag.evaluate --hybrid --questions eval/questions.csv eval/questions_v2_draft.csv
+       (--hybrid: 모델 두 개 + 질문 바꿔 쓰기 + 재정렬 + 순위 합치기. rag/hybrid.py)
 결과:  화면 요약 + eval/results/{method}_{시각}.csv (문제별 순위, 1등 조각 위치)
 """
 from __future__ import annotations
@@ -71,7 +73,7 @@ def load_questions(path: Path = QUESTIONS) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from rag.search import search  # DB·모델이 필요한 import는 실행할 때만
+    from rag.search import count_chunks, search  # DB·모델이 필요한 import는 실행할 때만
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--method", default="baseline500")
@@ -79,17 +81,32 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rerank", action="store_true", help="1차 검색 결과를 재정렬 모델로 다시 줄 세운 뒤 채점")
     ap.add_argument("--fetch", type=int, default=K_FETCH, help="1차 검색으로 가져올 조각 수 (= 재정렬 후보 수)")
     ap.add_argument("--max-len", type=int, default=512, help="재정렬 모델이 읽는 최대 토큰 수")
+    ap.add_argument("--hybrid", action="store_true", help="최종 검색 방식(rag.hybrid.retrieve)으로 채점")
+    ap.add_argument("--llm-pick", action="store_true", help="--hybrid에서 상위 10개 중 최종 3개를 Claude가 고른다")
+    ap.add_argument("--no-rewrite", action="store_true", help="--hybrid에서 질문 바꿔 쓰기를 끈다")
+    ap.add_argument("--rewrite-prompt", default="v1", help="--hybrid에서 쓸 바꿔 쓰기 프롬프트 버전 (v1, v2)")
+    ap.add_argument("--questions", nargs="+", default=[str(QUESTIONS)], help="평가 문항 파일 (여러 개 가능)")
     args = ap.parse_args(argv)
 
-    qs = load_questions()
+    qs = [q for path in args.questions for q in load_questions(Path(path))]
     answerable = [q for q in qs if q["type"] in ("answer", "hard")]
     bad = [q["id"] for q in answerable if not norm(q["evidence"])]
     if bad:
         print(f"근거 문구가 비어 있는 문제: {bad}")
         return 1
 
+    for m in ([args.method, args.method + "@m3"] if args.hybrid else [args.method]):
+        if count_chunks(m) == 0:
+            print(f"method={m} 조각이 DB에 없습니다. 먼저: python -m rag.ingest --method {m}")
+            return 1
+
     RESULTS.mkdir(parents=True, exist_ok=True)
     label = args.method + (f"+rerank{args.fetch}_len{args.max_len}" if args.rerank else "")
+    if args.hybrid:
+        from rag.hybrid import retrieve
+        label = f"hybrid_{args.method}_k{args.fetch}_len{args.max_len}" + ("" if args.no_rewrite else f"+rw-{args.rewrite_prompt}") \
+            + ("+llmpick" if args.llm_pick else "")
+        args.rerank = False
     rr_times: list[float] = []
     if args.rerank:
         from rag.rerank import rerank
@@ -104,8 +121,14 @@ def main(argv: list[str] | None = None) -> int:
         w.writerow(["id", "gen", "type", "question", "rank", f"hit@{args.budget}자", "top1_page", "top1_text"])
         for q in answerable:
             gen = int(q["gen"])
-            rows = search(q["question"], k=args.fetch, gen=gen, method=args.method)
-            in_fetch += first_hit_rank(rows, gen, q["evidence"]) is not None
+            if args.hybrid:
+                rows, pool_rows = retrieve(q["question"], gen, top=K_MAX, base=args.method, k=args.fetch,
+                                           max_length=args.max_len, use_rewrite=not args.no_rewrite,
+                                           prompt=args.rewrite_prompt, return_all=True,
+                                           llm_pick=args.llm_pick)
+            else:
+                rows = pool_rows = search(q["question"], k=args.fetch, gen=gen, method=args.method)
+            in_fetch += first_hit_rank(pool_rows, gen, q["evidence"]) is not None
             if args.rerank:
                 t_r = time.perf_counter()
                 rows = rerank(q["question"], rows, max_length=args.max_len)
@@ -133,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         srt = sorted(rr_times)
         print(f"   재정렬 시간: 질문당 평균 {sum(rr_times) / len(rr_times):.1f}초 · 중앙값 {srt[len(srt) // 2]:.1f}초"
               f" · 최대 {srt[-1]:.1f}초 (후보 {args.fetch}개, 최대 {args.max_len}토큰)")
-    print(f"   1차 검색 {args.fetch}개 안에 정답이 있던 문제: {in_fetch}/{m['n']}"
+    print(f"   {'합친 후보' if args.hybrid else f'1차 검색 {args.fetch}개'} 안에 정답이 있던 문제: {in_fetch}/{m['n']}"
           f"{' (재정렬로 올릴 수 있는 최대치)' if args.rerank else ''}")
     skipped = len(qs) - len(answerable)
     if skipped:

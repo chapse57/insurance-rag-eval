@@ -8,12 +8,12 @@ import argparse
 import time
 
 from rag.db import connect
-from rag.embed import _model, embed_query, to_pgvector
+from rag.embed import _model, embed_query, split_method, table_for, to_pgvector
 
 SQL = """
 SELECT gen, doc, chunk_no, page_start, page_end,
        1 - (embedding <=> %(q)s::vector) AS score, text
-FROM chunks
+FROM {table}
 WHERE method = %(method)s AND (%(gen)s::smallint IS NULL OR gen = %(gen)s::smallint)
 ORDER BY embedding <=> %(q)s::vector
 LIMIT %(k)s
@@ -21,13 +21,25 @@ LIMIT %(k)s
 
 
 def search(question: str, k: int = 3, gen: int | None = None, method: str = "baseline500"):
-    q = to_pgvector(embed_query(question))
+    # method 뒤의 '@m3' 같은 이름표가 임베딩 모델과 표를 정한다 (없으면 e5-small + chunks 표)
+    q = to_pgvector(embed_query(question, model=split_method(method)[1]))
     with connect() as conn:
-        return conn.execute(SQL, {"q": q, "gen": gen, "k": k, "method": method}).fetchall()
+        return conn.execute(SQL.format(table=table_for(method)),
+                            {"q": q, "gen": gen, "k": k, "method": method}).fetchall()
+
+
+def count_chunks(method: str) -> int:
+    """이 method로 넣어 둔 조각 수. 0이면 ingest를 안 돌린 것 (표가 아직 없어도 0)."""
+    import psycopg
+    try:
+        with connect() as conn:
+            return conn.execute(f"SELECT count(*) FROM {table_for(method)} WHERE method = %s", (method,)).fetchone()[0]
+    except psycopg.errors.UndefinedTable:
+        return 0
 
 
 NEIGHBOR_SQL = """
-SELECT chunk_no, text FROM chunks
+SELECT chunk_no, text FROM {table}
 WHERE method = %(method)s AND gen = %(gen)s AND doc = %(doc)s AND chunk_no = ANY(%(nos)s)
 """
 
@@ -37,7 +49,7 @@ def neighbors(row, method: str = "baseline500") -> tuple[str, str]:
     앞 + 이 조각 + 뒤를 붙이면 원문이 그대로 이어진다. 없으면 빈 문자열."""
     gen, doc, no = row[0], row[1], row[2]
     with connect() as conn:
-        found = dict(conn.execute(NEIGHBOR_SQL, {"method": method, "gen": gen, "doc": doc,
+        found = dict(conn.execute(NEIGHBOR_SQL.format(table=table_for(method)), {"method": method, "gen": gen, "doc": doc,
                                                  "nos": [no - 1, no + 1]}).fetchall())
     return found.get(no - 1, ""), found.get(no + 1, "")
 

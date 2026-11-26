@@ -19,3 +19,31 @@ CREATE INDEX IF NOT EXISTS chunks_allowed_groups ON chunks USING gin (allowed_gr
 
 def ensure_v2_schema(conn) -> None:
     conn.execute(V2_SQL)
+
+
+EMBED_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS {table} (
+    id          bigserial PRIMARY KEY,
+    method      text      NOT NULL,
+    gen         smallint  NOT NULL,
+    doc         text      NOT NULL,
+    chunk_no    int       NOT NULL,
+    page_start  int       NOT NULL,
+    page_end    int       NOT NULL,
+    text        text      NOT NULL,
+    embedding   vector({dim}) NOT NULL,
+    UNIQUE (method, doc, chunk_no)
+);
+CREATE INDEX IF NOT EXISTS {table}_method_gen ON {table} (method, gen);
+"""
+
+
+def ensure_embed_table(conn, key: str) -> str:
+    """임베딩 모델 이름표(e5s, m3) -> 그 모델용 표가 없으면 만들고 표 이름을 돌려준다.
+    기본 모델(e5s)의 chunks 표는 init.sql이 만들므로 건드리지 않는다.
+    표 이름과 차원은 rag.embed.EMBEDDERS에 적힌 고정값만 쓴다 (사용자 입력이 SQL에 들어가지 않는다)."""
+    from rag.embed import DEFAULT_EMBEDDER, EMBEDDERS
+    spec = EMBEDDERS[key]
+    if key != DEFAULT_EMBEDDER:
+        conn.execute(EMBED_TABLE_SQL.format(table=spec.table, dim=spec.dim))
+    return spec.table
