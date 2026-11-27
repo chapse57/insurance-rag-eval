@@ -4,6 +4,30 @@
 
 A RAG system over Korean health-insurance policy documents (indemnity policies, generations 2–4, 583 pages). The goal is not a chatbot that "works", but a record of measuring every stage, finding why it fails, and fixing it — starting from a deliberately plain baseline.
 
+### Current results (Nov 2026): 60 answerable questions + 6 with no answer in the policy
+
+| Stage | Result | How |
+|---|---|---|
+| Retrieval: correct passage in the top 3 | 75.0% (45/60) → **90.0% (54/60)**, 95% CI 79.9–95.3% | candidates from two embedding models (e5-small + bge-m3), the question rewritten into policy terms, both rankings re-ranked and fused. The correct passage is in the candidate pool for 60/60 |
+| Answers correct (each answer read and judged) | **86.7% (52/60)** with 3 passages | 4 confidently wrong, 1 incomplete, 3 refused |
+| No-answer questions | 6/6 not answered | one reply said "not in the policy, call the support line"; the script counts it as an answer |
+
+**Tried and not adopted** (kept as measured results)
+- Giving the model 10 passages instead of 3: correct answers went 52 → 50. More look-alike clauses (covered vs. non-covered care) produced mixed-up answers.
+- Cutting by article and labelling every chunk with its location: retrieval 54 → 51, answers 52 → 53. It fixed the confusions it targeted and broke about as many summary-table questions.
+- Letting Claude pick the final 3 out of 10: no change in the top-3 rate.
+
+**Read these numbers with care**
+- All 60 questions were used for tuning, and the last fusion rule was added after reading the failures. "90%" leans optimistic until it is checked on a held-out set.
+- At n = 60, a difference of 2–3 questions cannot be told apart from noise (45 → 52 had McNemar p = 0.12).
+- 36 of the 60 questions were drafted with Claude from the clause text and are not fully hand-reviewed. Answers were judged by reading each one with Claude's help; a full re-check by the author is pending.
+- Scoring matches one verbatim evidence phrase per question, so a correct passage with different wording counts as a miss.
+- Re-ranking went from 9.0 s to 0.4 s per question after replacing the CPU build of torch with the CUDA build (RTX 4060).
+
+### Earlier phase (Oct 2026): 24 questions, one embedding model
+
+The three images and the table below are from this phase. Four evidence labels were corrected afterwards (see "Label correction"), so these figures are not directly comparable with the November ones.
+
 ![How it works](docs/pipeline_en.png)
 
 ![Results](docs/results_en.png)
@@ -14,7 +38,7 @@ A RAG system over Korean health-insurance policy documents (indemnity policies, 
 
 | Stage | Before | After | What changed |
 |---|---|---|---|
-| Retrieval: correct clause in the top 3 (24 answerable questions) | 41.7% (10/24) | 66.7% (16/24) | re-ranking 20 candidates with bge-reranker-v2-m3; MRR 0.295 → 0.569 |
+| Retrieval: correct clause in the top 3 (24 answerable questions) | 41.7% (10/24) | 66.7% (16/24) | re-ranking 20 candidates with bge-reranker-v2-m3; MRR 0.295 → 0.569. McNemar p = 0.07: a clear direction, not conclusive at n = 24 |
 | Answers correct, checked by a person | 13/24 | 20/24 | output format forced via tool use: truncated answers 7 → 0, output tokens 20,537 → 6,465 |
 | No-answer questions refused | 6/6 | 5/6 | one answer said "can't confirm" but was submitted as found — logged, not hidden |
 
@@ -23,20 +47,20 @@ A RAG system over Korean health-insurance policy documents (indemnity policies, 
 - All 14 baseline misses were retrieval misses: 0 from text extraction, 0 from chunk boundaries.
 - Asking in policy vocabulary instead of customer words inflates the score (41.7% → 54.2%), so the eval set uses customer wording.
 
-**Limits (kept on purpose)**
-- 6 questions still have no correct chunk in the top 20 — mostly customer words vs. policy words ("money back" vs. "surrender value"). The next fix is retrieval, not the answer step.
+**Limits at that point**
+- 6 questions had no correct chunk in the top 20 — mostly customer words vs. policy words ("money back" vs. "surrender value"). This is what the November work addressed (candidate pool now 60/60).
 - The quote check stops made-up quotes, but not a real sentence used the wrong way (1 case, q06).
-- Re-ranking takes about 13 s per question on CPU.
+- Re-ranking took about 13 s per question on CPU (0.4 s on GPU since November).
 
-Answer run for 30 questions: about $0.011 (Claude Haiku). 55 tests (pytest). Updated documents without stale versions, and permission filtering inside retrieval: see the last section.
-Stack: Python, PostgreSQL 16 + pgvector, multilingual-e5-small, bge-reranker-v2-m3, Claude API (tool use), pytest, Docker. Run commands: see "실행" below.
+Answer run for 66 questions: about $0.024 (Claude Haiku). 73 tests (pytest). Updated documents without stale versions, and permission filtering inside retrieval: see the last section.
+Stack: Python, PostgreSQL 16 + pgvector, multilingual-e5-small, bge-m3, bge-reranker-v2-m3, Claude API (tool use), pytest, Docker. Run commands: see "실행" below.
 
 ---
 
 실손의료보험 약관(2·3·4세대)을 넣고 "내 실손은 몇 세대고, 이 진료는 보장되나"에 답하는 RAG입니다.
 목표는 잘 돌아가는 챗봇이 아니라, **검색이 맞는 조항을 가져왔는지 숫자로 재고, 틀린 이유를 단계별로 나눠 고친 과정**을 남기는 것입니다.
 
-> 지금 상태: 검색(베이스라인 → 진단 → 실험 1·2) 완료, 답변 생성 + 근거 검사 2차 측정 완료.
+> 지금 상태 (2026-11-27): 평가 60문항 기준 검색 Hit@3 90.0%, 답변 정확도 86.7%. 아래 그림 넷은 10월(24문항) 단계의 것입니다.
 
 ![구조](docs/pipeline.png)
 
@@ -50,7 +74,56 @@ Stack: Python, PostgreSQL 16 + pgvector, multilingual-e5-small, bge-reranker-v2-
 
 ![거절 예시](docs/run_refusal.png)
 
-## 검색 결과
+## 2026-11 정확도 개선 (60문항)
+
+평가 문항을 24개에서 60개로 늘렸습니다 (앞쪽 요약표에서 나온 24개 + 약관 조문 본문에서 나온 36개). 약관에 답이 없는 6문항은 따로 셉니다.
+시작점 75.0%는 10월 방식(임베딩 모델 하나 + 재정렬)을 같은 60문항으로 잰 값입니다.
+
+| 단계 | 결과 | 비고 |
+|---|---|---|
+| 검색 Hit@3 | 75.0% (45/60) → 86.7% (52/60) → **90.0% (54/60)** | 95% 신뢰구간 79.9~95.3% · MRR@10 0.704 · Hit@3000자 95.0% · 합친 후보 안에 정답 60/60 |
+| 답변 정확도 (답 문장을 하나씩 읽어 판정) | **86.7% (52/60)** | 조각 3개 기준. 자신 있게 틀린 답 4 · 불완전 1 · 거절 3 |
+| 답 없는 6문항 | 6/6 답하지 않음 | 1건은 "약관에 안내가 없으니 콜센터로 문의"라고 답해 채점 스크립트는 답한 것으로 셉니다 |
+
+**검색 방식** (`rag/hybrid.py`)
+
+```
+질문 ─┬─ 원래 질문 ───┬─ e5-small 상위 20 ─┐
+      │               └─ bge-m3   상위 20 ─┴─ 합친 후보 → 재정렬 → 순위 A
+      └─ 바꿔 쓴 질문 ─ (같은 과정) ────────────────────────────────→ 순위 B
+         (Claude Haiku가 약관 용어로 바꿈)
+순위 A + 순위 B (RRF) → 각 순위의 1등을 맨 앞으로 → 거의 같은 조각 제거 → 상위 3
+```
+
+**무엇이 점수를 올렸나**
+1. **임베딩 모델 두 개의 후보를 합침.** 모델 하나의 상위 20개에는 정답이 없는 문항이 있었고, 합치니 60문항 전부 후보 안에 정답이 들어왔습니다.
+2. **원래 질문과 바꿔 쓴 질문의 순위를 합침.** 원래 질문은 요약표 문항에, 약관 용어로 바꿔 쓴 질문은 조문 문항에 강합니다. 한쪽만 쓰면 46/60, 합치면 52/60.
+3. **각 순위의 1등은 남김 (52 → 54).** 바꿔 쓴 질문이 뜻을 틀리게 옮기면 원래 질문의 1등이 합친 순위에서 4~5등으로 밀렸습니다. 이 규칙은 틀린 문항을 들여다본 뒤에 넣었습니다.
+4. **GPU.** torch가 CPU판으로 깔려 있던 것을 CUDA판으로 바꿔 재정렬이 질문당 9.0초 → 0.4초.
+
+**해 봤지만 채택하지 않은 것**
+
+| 시도 | 결과 |
+|---|---|
+| 재정렬 후보 20 → 40 | 후보 안 정답은 1개 늘었는데 Hit@3은 떨어짐 (24문항 83.3% → 70.8%). 헷갈리는 조각도 같이 늘어남 |
+| 조각을 100자씩 겹치기 | 노린 문항(q18)은 고쳐졌지만 4문항을 잃어 순효과 없음 (p=0.69). 기계적 자르기는 하나만 바꿔도 6~8문항이 흔들림 |
+| Claude가 상위 10개 중 3개 고르기 | Hit@3 그대로 (MRR 0.672 → 0.775) |
+| 답변 단계에 조각 10개 주기 | 맞는 답 52 → 50. 비슷한 조항이 늘어 급여·비급여를 섞거나 목록의 뜻을 뒤집음 |
+| 조문 단위로 자르고 조각마다 위치 이름표 붙이기 (`struct500`, `mixed500`) | 검색 54 → 51, 답변 52 → 53. 노린 문항(급여·비급여 혼동, 잘린 목록)은 고쳐졌지만 요약표 문항이 그만큼 흔들림 |
+
+**답변에서 틀린 8문항 (조각 3개 기준)**
+- 자신 있게 틀림 4: 급여·비급여 혼동(q03), 비슷하지만 다른 문장을 근거로 씀(q06), 다른 규칙의 숫자를 인용(q07), 질문이 두 가지로 읽힘(n27)
+- 불완전 1: 목록이 조각 경계에서 잘려 "누가"를 못 댐(n07)
+- 거절 3: 정답 조각이 상위 3개에 없음(q25, n10, n22)
+
+**이 숫자의 한계**
+- 60문항을 전부 튜닝에 썼습니다. 튜닝에 안 쓴 새 문항으로 확인하기 전까지 90%는 낙관적인 쪽입니다.
+- 60문항에서는 2~3문항 차이를 우연과 구분할 수 없습니다 (45 → 52는 McNemar p=0.12).
+- 새 36문항은 Claude가 조문 본문을 보고 만든 초안이고 전수 검수 전입니다. 답변 판정도 Claude의 도움을 받아 하나씩 읽은 것이라 작성자 전수 검수가 남았습니다.
+- 채점은 문항마다 근거 문구 하나가 글자 그대로 들어 있는지를 봅니다. 같은 내용을 다른 문장으로 담은 조각은 오답으로 셉니다.
+- 10월 숫자(24문항)는 근거 문구 4개를 고치기 전의 시험지로 잰 것이라 11월 숫자와 직접 비교하지 않습니다.
+
+## 10월 검색 결과 (24문항)
 
 | 버전 | 자르기 | 재정렬 | Hit Rate@3 | MRR@10 | Hit@3000자 | 비고 |
 |---|---|---|---|---|---|---|
@@ -69,11 +142,11 @@ Stack: Python, PostgreSQL 16 + pgvector, multilingual-e5-small, bge-reranker-v2-
 AI에 넣는 글자 수를 3000자로 맞추면 200·500·1000자 모두 24문제 중 13~14문제로 거의 같습니다.
 "작게 자르면 한 조각에 섞이는 내용이 줄어 좋아진다"는 가설은 맞지 않았습니다.
 
-**실험 2 결론 — 재정렬로 점수가 거의 두 배가 됐지만, 느립니다.**
+**실험 2 결론 — 재정렬로 Hit@3이 41.7% → 66.7%로 올랐지만, 느립니다.** (24문항에서 McNemar p=0.07: 방향은 뚜렷하지만 이 문항 수로는 확정할 수 없습니다. fixed1000(58.3%)과 비교하면 p=0.73입니다.)
 - 1차 검색(임베딩)으로 20개를 가져와 재정렬 모델이 질문과 조각을 함께 읽고 다시 줄 세웁니다. Hit@3 41.7% → 66.7%, MRR 0.295 → 0.569.
 - 1차 20개 안에 정답이 있던 문제가 18개였고 재정렬 후 Hit@3000자도 18개 — 재정렬이 올릴 수 있는 만큼은 다 올렸습니다.
 - 남은 6문제(q02, q06, q07, q14, q18, q25)는 1차 20개 안에 정답이 없어 재정렬로는 못 고칩니다. 다수가 고객 말과 약관 말의 차이입니다 (예: "교통사고" ↔ "자동차보험", "돌려받는 돈" ↔ "해지환급금").
-- 비용: CPU에서 질문당 약 13초 (재정렬 없이는 약 0.4초). 실제 서비스라면 GPU나 더 작은 재정렬 모델이 필요합니다.
+- 비용: CPU에서 질문당 약 13초 (재정렬 없이는 약 0.4초). 11월에 GPU로 옮긴 뒤로는 재정렬 포함 질문당 0.4초입니다.
 
 ## 답변 단계: 근거 검사(가드레일)
 
@@ -167,12 +240,16 @@ rag/chunking.py       조각 나누기 (baseline500 = 500자마다 기계적으�
 rag/embed.py          임베딩: intfloat/multilingual-e5-small (무료·로컬, 384차원)
 rag/ingest.py         조각 -> 임베딩 -> Postgres(pgvector) 저장, 넣은 수와 DB 수 대조
 rag/search.py         질문 -> 가장 가까운 조각 k개 (세대 필터 가능)
-rag/rerank.py         재정렬: bge-reranker-v2-m3로 1차 20개를 다시 줄 세움
+rag/rerank.py         재정렬: bge-reranker-v2-m3로 후보를 다시 줄 세움 (점수는 파일에 저장해 다시 씀)
+rag/rewrite.py        질문 바꿔 쓰기: 고객 말투 -> 약관 용어 검색어 (Claude Haiku, 결과 저장)
+rag/hybrid.py         최종 검색 방식: 모델 두 개 + 질문 두 개 + 재정렬 + 순위 합치기
 rag/generate.py       답변 생성(Claude, 도구 스키마로 형식 강제) + 근거 검사(인용문이 조각에 있는지)
-rag/ask.py            질문 하나에 답: 검색 -> 재정렬 -> 생성 -> 근거 검사
+rag/ask.py            질문 하나에 답: 최종 검색 방식 -> 생성 -> 근거 검사
 rag/evaluate.py       검색 채점: Hit@3, MRR@10, Hit@3000자
 rag/evaluate_answers.py  답변 채점: 맞는 답 / 거절 원인 / 가드레일 판정 / 비용
-eval/questions.csv    평가 문제 30개
+eval/questions.csv    평가 문제 30개 (요약표 문항 24 + 답 없는 문항 6)
+eval/questions_v2_draft.csv  평가 문제 36개 (조문 본문 문항, 초안)
+eval/confidence.py    신뢰구간(Wilson)과 버전 간 유의성(McNemar)
 db/init.sql           chunks 표. method 컬럼으로 버전별 결과를 한 DB에서 비교
 ```
 
@@ -190,11 +267,12 @@ py -m venv .venv
 pip install -r requirements.txt
 
 python -m rag.extract_check          # 1. 글자가 제대로 뽑히는지 검사
-python -m rag.ingest --method baseline500   # 2. 자르기 -> 임베딩 -> 저장
+python -m rag.ingest --method baseline500   # 2. 자르기 -> 임베딩 -> 저장 (e5-small)
+python -m rag.ingest --method baseline500@m3   #    같은 조각을 bge-m3로 한 번 더
 python -m rag.search "도수치료는 보장되나요" --gen 4   # 3. 검색
-python -m rag.evaluate --method baseline500 --rerank      # 4. 검색 채점
-python -m rag.ask "3세대 실손 해지하면 돌려받는 돈 있어요?" --gen 3 --rerank   # 5. 답변 (.env에 ANTHROPIC_API_KEY 필요)
-python -m rag.evaluate_answers --rerank                    # 6. 답변 채점
+python -m rag.evaluate --hybrid --questions eval/questions.csv eval/questions_v2_draft.csv      # 4. 검색 채점 (60문항)
+python -m rag.ask "3세대 실손 해지하면 돌려받는 돈 있어요?" --gen 3   # 5. 답변 (.env에 ANTHROPIC_API_KEY 필요)
+python -m rag.evaluate_answers --hybrid --k 3 --questions eval/questions.csv eval/questions_v2_draft.csv   # 6. 답변 채점
 python -m pytest -q                  # 테스트
 ```
 
@@ -307,5 +385,5 @@ Public policy (6 clauses, group `public`) plus internal underwriting rules (4 cl
 ```bash
 python -m rag.demo_reindex          # 1. append vs upsert vs replace
 python -m rag.demo_acl              # 2. no filter vs filter after vs filter inside
-python -m pytest -q tests           # 55 tests; DB tests are skipped if Postgres is not running
+python -m pytest -q tests           # 73 tests; DB tests are skipped if Postgres is not running
 ```

@@ -12,11 +12,13 @@ import time
 import psycopg
 import streamlit as st
 
+from rag.ask import retrieve_final
 from rag.generate import MODEL, answer
 from rag.search import neighbors, search
 from rag.view import display_quote, guard_label, with_context
 
-RERANK_MAX_LEN = 256   # 평가 24문제: 512토큰 66.7%·질문당 약 13초 / 256토큰 70.8%·8.6초 (10/16 측정)
+RERANK_MAX_LEN = 256   # 예전 방식에서만 쓴다 (10/16 측정: 256토큰 70.8%·질문당 8.6초, CPU)
+FINAL_MAX_LEN = 512    # 최종 검색 방식이 쓰는 재정렬 길이 (rag/hybrid.py 기본값)
 
 EXAMPLES = [
     (3, "3세대 실손 해지하면 돌려받는 돈 있어요?"),
@@ -32,10 +34,13 @@ st.caption("약관 583쪽에서 근거를 찾아 답하고, AI가 인용한 문�
 
 
 @st.cache_resource(show_spinner="검색 모델 불러오는 중 (처음 한 번만)...")
-def warm_up(use_rerank: bool) -> bool:
+def warm_up(use_final: bool) -> bool:
+    from rag.rerank import _model
     search("준비", 1, 3)
-    if use_rerank:
-        from rag.rerank import _model
+    if use_final:
+        search("준비", 1, 3, "baseline500@m3")
+        _model(FINAL_MAX_LEN)
+    else:
         _model(RERANK_MAX_LEN)
     return True
 
@@ -45,9 +50,14 @@ st.session_state.setdefault("question", "")
 
 with st.sidebar:
     st.subheader("설정")
-    use_rerank = st.toggle("재정렬 사용 (정확도 ↑, CPU에서 질문당 약 9초)", value=True)
-    st.markdown(f"- 답변 모델: `{MODEL}`\n- 검색: 가까운 조각 20개 → 재정렬({RERANK_MAX_LEN}토큰) → 상위 3개\n"
-                "- 상위 3개 적중률: 재정렬 전 41.7% → 후 70.8% (평가 24문제)")
+    use_final = st.toggle("최종 검색 방식 (끄면 예전 방식: 모델 1개 + 재정렬)", value=True)
+    if use_final:
+        st.markdown(f"- 답변 모델: `{MODEL}`\n- 검색: 임베딩 모델 2개의 후보를 합침 → 원래 질문과 약관 용어로 바꿔 쓴 질문으로 "
+                    "각각 재정렬 → 순위 합치기 → 상위 3개\n"
+                    "- 평가 60문항: 상위 3개 적중률 90.0%, 답변 정확도 86.7% (답을 하나씩 읽어 판정)")
+    else:
+        st.markdown(f"- 답변 모델: `{MODEL}`\n- 검색: 가까운 조각 20개 → 재정렬({RERANK_MAX_LEN}토큰) → 상위 3개\n"
+                    "- 10월 측정(24문항): 상위 3개 적중률 70.8%")
     st.subheader("예시 질문")
     for gen, q in EXAMPLES:
         if st.button(q, use_container_width=True):
@@ -64,13 +74,13 @@ DB_OFF = ("DB에 연결할 수 없습니다. Docker Desktop을 켠 뒤, Upwork_2
 
 if go and question.strip():
     try:
-        warm_up(use_rerank)
+        warm_up(use_final)
         t0 = time.perf_counter()
-        if use_rerank:
+        if use_final:
+            rows = retrieve_final(question, gen, 3)
+        else:
             from rag.rerank import rerank
             rows = rerank(question, search(question, 20, gen), max_length=RERANK_MAX_LEN)[:3]
-        else:
-            rows = search(question, 3, gen)
     except psycopg.OperationalError:
         st.error(DB_OFF)
         st.stop()

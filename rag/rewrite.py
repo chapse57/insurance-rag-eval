@@ -102,20 +102,28 @@ def _load_cache(path: Path) -> dict:
     return data
 
 
-def rewrite(question: str, cache_path: Path = CACHE, ask=None, version: str = DEFAULT_PROMPT) -> str:
-    """질문 -> 검색어. 형식이 이상하게 오면 원래 질문을 그대로 돌려준다 (검색이 망가지지 않게)."""
+def rewrite(question: str, cache_path: Path = CACHE, ask=None, version: str = DEFAULT_PROMPT,
+            save_to: Path | None = None) -> str:
+    """질문 -> 검색어. 형식이 이상하게 오면 원래 질문을 그대로 돌려준다 (검색이 망가지지 않게).
+
+    save_to: 새로 만든 검색어를 cache_path 대신 여기에 저장한다. 화면·명령줄에서 들어온 아무 질문이나
+    평가용 파일(eval/rewrites.json, 리포에 올라감)에 섞여 들어가지 않게 하려는 것. 읽을 때는 둘 다 본다.
+    """
     sha = prompt_sha(version)
     hit = _load_cache(cache_path).get(sha, {}).get(question)
+    if not (hit and hit.get("model") == MODEL) and save_to is not None:
+        hit = _load_cache(save_to).get(sha, {}).get(question)
     if not (hit and hit.get("model") == MODEL):
         data = ask(question) if ask else ask_model(question, version)
         query, terms = data.get("query"), data.get("terms")
         if not isinstance(query, str) or not query.strip() or not isinstance(terms, list):
             return question
         hit = {"query": query, "terms": [str(t) for t in terms], "model": MODEL}
-        cache = _load_cache(cache_path)
+        target = save_to if save_to is not None else cache_path
+        cache = _load_cache(target)
         cache.setdefault(sha, {})[question] = hit
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
     return build_search_query(hit["query"], hit["terms"])
 
 

@@ -95,14 +95,15 @@ def ranked_for_query(query: str, gen: int | None, base: str, k: int, max_length:
 
 def retrieve(question: str, gen: int | None = None, top: int = 3, base: str = "baseline500", k: int = 20,
              max_length: int = 512, use_rewrite: bool = True, prompt: str = "v1", return_all: bool = False,
-             llm_pick: bool = False):
-    """질문 -> 상위 top개 조각. return_all=True면 (상위 top개, 쌍둥이 제거 전 전체 순위)를 돌려준다."""
+             llm_pick: bool = False, rewrite_save_to=None):
+    """질문 -> 상위 top개 조각. return_all=True면 (상위 top개, 쌍둥이 제거 전 전체 순위)를 돌려준다.
+    rewrite_save_to: 새 질문의 바꿔 쓴 검색어를 저장할 파일 (rag.rewrite.rewrite의 save_to). 평가에서는 쓰지 않는다."""
     lists = [ranked_for_query(question, gen, base, k, max_length)]
     if use_rewrite:
         from rag.rewrite import rewrite
         seen = {question}
         for version in prompt.split(","):          # "v1,v2": 프롬프트마다 바꿔 쓴 질문으로 순위를 하나씩 더 만든다
-            rewritten = rewrite(question, version=version.strip())
+            rewritten = rewrite(question, version=version.strip(), save_to=rewrite_save_to)
             if rewritten not in seen:
                 seen.add(rewritten)
                 lists.append(ranked_for_query(rewritten, gen, base, k, max_length))

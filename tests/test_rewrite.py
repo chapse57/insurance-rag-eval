@@ -22,3 +22,20 @@ def test_같은_질문은_저장해_둔_검색어를_다시_쓴다(tmp_path):
 
 def test_형식이_이상하면_원래_질문으로_검색한다(tmp_path):
     assert RW.rewrite("원래 질문", cache_path=tmp_path / "c.json", ask=lambda q: {"query": ""}) == "원래 질문"
+
+
+def test_새_질문의_검색어는_평가용_파일이_아니라_따로_지정한_파일에_저장한다(tmp_path):
+    main, live = tmp_path / "rewrites.json", tmp_path / "live.json"
+    calls = []
+
+    def fake(q):
+        calls.append(q)
+        return {"query": "약관 문체 질문", "terms": ["용어"]}
+
+    RW.rewrite("평가 문항", cache_path=main, ask=fake)                       # 평가용 파일에 저장
+    before = main.read_text(encoding="utf-8")
+    first = RW.rewrite("화면에서 들어온 질문", cache_path=main, ask=fake, save_to=live)
+    second = RW.rewrite("화면에서 들어온 질문", cache_path=main, ask=fake, save_to=live)
+    assert first == second and calls == ["평가 문항", "화면에서 들어온 질문"]   # 두 번째는 저장된 것을 읽는다
+    assert main.read_text(encoding="utf-8") == before                       # 평가용 파일은 그대로
+    assert RW.rewrite("평가 문항", cache_path=main, ask=fake, save_to=live) and len(calls) == 2   # 평가 문항은 평가용 파일에서 읽는다
