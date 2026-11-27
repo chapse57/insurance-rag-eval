@@ -11,7 +11,7 @@ import json
 import time
 from pathlib import Path
 
-from rag.chunking import chunk_baseline, clean_pages
+from rag.chunking import chunk_baseline, chunk_mixed, chunk_structured, clean_pages
 from rag.db import connect
 from rag.embed import embed_passages, split_method, to_pgvector
 from rag.schema import ensure_embed_table
@@ -26,8 +26,12 @@ METHODS = {
     "overlap100": lambda pages: chunk_baseline(pages, size=500, overlap=100),
     # 실험 3: 자르기는 그대로 500자, 그 전에 글자를 청소한다 (굵은 제목 복원 + 목차 제거)
     "clean500": lambda pages: chunk_baseline(clean_pages(pages), size=500),
+    # 실험 4: 약관 구조(약관 > 장·관 > 조 > 소제목)를 따라 자르고 조각마다 위치 이름표를 붙인다 (rag/chunking.py)
+    "struct500": lambda pages: chunk_structured(pages, size=500),
 }
-SKIP_TOC = {"clean500"}   # 이 method들은 목차로 판정된 페이지(status=toc)도 통째로 뺀다
+SKIP_TOC = {"clean500", "struct500"}
+# 실험 5: 앞쪽 요약부는 baseline500 그대로, 약관 본문만 struct500 방식 (요약부는 구조가 없어 건드리면 손해였다)
+MIXED = {"mixed500"}   # 이 method들은 목차로 판정된 페이지(status=toc)도 통째로 뺀다
 
 
 def load_pages(path: Path, skip_toc: bool = False) -> tuple[int, str, list[tuple[int, str]], int]:
@@ -52,8 +56,8 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"자르기 방식 {sorted(METHODS)}. 뒤에 @m3를 붙이면 임베딩 모델을 bge-m3로 바꾼다")
     args = ap.parse_args(argv)
     base, embed_key = split_method(args.method)
-    if base not in METHODS:
-        ap.error(f"모르는 자르기 방식: {base!r} (가능: {sorted(METHODS)})")
+    if base not in METHODS and base not in MIXED:
+        ap.error(f"모르는 자르기 방식: {base!r} (가능: {sorted(set(METHODS) | MIXED)})")
 
     files = sorted(PROCESSED.glob("gen*_pages.jsonl"))
     if not files:
@@ -67,7 +71,10 @@ def main(argv: list[str] | None = None) -> int:
         total = 0
         for f in files:
             gen, doc, pages, skipped = load_pages(f, skip_toc=base in SKIP_TOC)
-            chunks = METHODS[base](pages)
+            if base in MIXED:
+                chunks = chunk_mixed(pages, load_pages(f, skip_toc=True)[2], size=500)
+            else:
+                chunks = METHODS[base](pages)
             vecs = embed_passages([c.text for c in chunks], model=embed_key)
             with conn.cursor() as cur:
                 cur.executemany(
